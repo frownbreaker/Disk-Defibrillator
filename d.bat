@@ -1,69 +1,75 @@
 @echo off
+:: ====================================
+:: Author: Agent X
+:: Description: Media Recovery Script
+:: Version: 1.0 
+:: Revision: 2024-01-12
+:: Only tested on Windows11
+:: ====================================
 cls
 setlocal enabledelayedexpansion
-REM By default, variables within a block of code (like an IF statement or a loop) 
-REM are expanded just once when the block is read, which means %miniumgoodformatcount% 
-REM is not updated after the set /a command within the same block (see code later)
-REM To solve this, enable delayed expansion, which allows you to use ! instead of % to 
-REM get the updated value of a variable within the same block. 
-REM Operator | Description
-REM EQU      | equal to
-REM NEQ      | not equal to
-REM LSS      | less than
-REM LEQ      | less than or equal to
-REM GTR      | greater than
-REM GEQ      | greater than or equal to
-setlocal
-:: Initialize the counter for the array index and max string length
-set /a index=0
-set /a BadSectorBytes=0
-set /a maxLength=0
-set /a maxfinalscancount=2
-set /a zerodefectformatcount=0
-set /a somedefectformatcount=0
-set /a wobble=0
-set /a stable=0
-set /a miniumgoodformatcount=2
-:: Enable Smart Format, this attempts more formats if there are bad sectors to improve recovery
-set /a smartformatcount=1 
-set /a lastformatfailed=0
-set /a failedformatcount=0
-set /a lastformatfailed=0
-set /a goodformatcount=10
-REM Set # times to try and format (if there are errors on the disk), if enabled Smart Format will double this for disks with bad sectors
-set /a maxf=4
-REM Set # of times to scan the disk and relocate sectors (when there are no bad sectors reported).
-REM This is important as it catches areas of the disk that are unreliable as sectors can work for 
-REM a few seconds to pass formatting, but loose their stored magenetic signal after a few minutes.
-REM This approach formats then disk including an erase cycle and random data fills with checksums
-REM followed by many independent reads 2-4 minutes later. You will see the error count increase
-REM as marginal sectors are moved out of use. This creates a more robust, reliable recovered disk
-REM with slightly less storage space.
-set /a scancount=2
-REM Set max # times to test a disk with bad sectors after formatting. 
+
+:: Set # formats
+set /a MAX_FORMAT_COUNT=20
+:: Set # times to scan a disk and check for errors once it is formatted. 
+set /a MAX_FINAL_SCAN_COUNT=2
+:: Set # consecutive formats are needed to complete with no bad sectors after whichdtimes to scan a disk and check for errors once it is formatted. 
+set /a MINIUM_ZERO_DEFECT_FORMAT_COUNT=2
+:: Set max # times to test a disk with bad sectors after formatting. 
 set /a MAX_STABILITY_CHECKS=10
-set /a goodformatcount=0
-set /a count=0
-set /a chkcount=1
-set /a lastformatfailed=0
+:: Set # times to try and format (if there are errors on the disk), if enabled Smart Format 
+:: will double this for disks with bad sectors
+set /a maxf=20
+:: Set # of times to scan the disk and relocate sectors (when there are no bad sectors reported).
+:: This is important as it catches areas of the disk that are unreliable as sectors can work for 
+:: a few seconds to pass formatting, but loose their stored magenetic signal after a few minutes.
+:: This approach formats then disk including an erase cycle and random data fills with checksums
+:: followed by many independent reads 2-4 minutes later. You will see the error count increase
+:: as marginal sectors are moved out of use. This creates a more robust, reliable recovered disk
+:: with slightly less storage space.
+set /a ScanCount=2
+:: Variables used 
+set /a badSectorBytes=0
+set /a badSectorBytesPrevious=0
 set /a badSectorsFound=-1
-set /a formatted_already=0
-
-
-
-
-::call :BadSectorReport
-::exit /b 0
-
-
-
-REM Get Script Start Time Using jTimestamp.cmd
-CALL jTimestamp -f {ums} -r t1
-REM Show time 
-call :showdatetime
-REM Assume not formatted
+set BAR_LINE=_______________________________________
+set /a chkCount=1
+set /a count=0
+set /a failedFormatCount=0
 set /a formatted=0
-REM Halt if files found on A: also record if disk is formatted
+set /a formattedAlready=0
+set /a goodFormatCount=0
+set /a hardErrorsStable=0
+set /a index=0
+set /a lastFormatFailed=0
+set /a line=0
+set /a maxLength=0
+set /a minimumGoodFormatCount=2
+set /a someDefectFormatCount=0
+set /a stable=0
+set /a wobble=0
+set /a zeroDefectFormatCount=0
+
+
+call :ShowLogo
+:: ====================================
+:: Main Code Block
+:: Check if the disk has data 
+:: Only format when do data is present
+:: Run formatting then scan the disk
+:: ====================================
+:: Get Script Start Time Using jTimestamp.cmd
+CALL jTimestamp -f {ums} -r t1
+:: Show time 
+call :showdatetime
+:: Halt if files found on A: also record if disk is formatted
+
+
+:: debug remove
+::call :BadSectorReport "test " !count!
+::call :GraphArray
+::goto :eof
+
 set "drive=A:"
 dir /b "%drive%\"
 if %errorlevel% equ 1 (
@@ -75,11 +81,18 @@ if %errorlevel% equ 0  (
 	DIR A:
 	exit /b
 )
+
+:: maxf is modified if SMART_FORMAT is enable (the default)
+:: In such cases to save time if we get 2 consecuetive
+:: Disk formats without error then further formatting does
+:: not take place. This is done by setting the loop
+:: control variable maxf to stop futher formats
+set /A maxf=MAX_FORMAT_COUNT
 :TryFormattingAgain
 :: Are we done?
 if !count! geq !maxf! (
     echo Made !maxf! attempts. Exit after checking for bad sectors..
-	if %lastformatfailed% equ 1 (
+	if %lastFormatFailed% equ 1 (
 		echo Last format did not work exit
 		echo Disk may be unusable wipe with magnet or electromagnet and retrying
 		echo Inspect the disks for errors to see if there is phyical damage
@@ -98,13 +111,13 @@ if !count! geq !maxf! (
 )
 :: Not done
 call :SFormat
-REM Skip Bad Sector Check if format did not work
-:: if lastformatfailed equ 0 (
-REM call :bscheck
 call :BadSectorReport "Format " !count!
-::)
+if !hardErrorsStable! equ 1 (
+	set /a maxf=!count!
+	echo Had 2 formats with same number of bad sectors
+)
 if !zerodefectformatcount! geq 2 (
-	set /a maxf=2
+	set /a maxf=MINIUM_ZERO_DEFECT_FORMAT_COUNT
 	echo Hit Limit for good formats  
 	echo !zerodefectformatcount! Zero defect formats, stopping formatting early.
 )
@@ -112,12 +125,19 @@ goto :TryFormattingAgain
 echo Stopping..
 exit /b
 
-
+:: ====================================
+:: Library Block
+:: Functions used by the main code
+:: Format, GetBadSector, Scan Fix  
+:: Show Stats, etc
+:: ====================================
 :DiskPostFormatCheck
 :: Last format was bad so no need to scan for bad sectors one last time
-if %lastformatfailed% equ 0 (
+if %lastFormatFailed% equ 0 (
 	call :finaldiskcheck
 )
+echo.
+echo %BAR_LINE%
 echo End of Disk Format / Check Run Report
 if !chkcount! equ %scancount% Echo Completed !chkcount! Surface Scans
 if !badSectorsFound! equ 0 Echo Formatted, no bad sectors
@@ -126,19 +146,19 @@ if !badSectorsFound! equ 1 (
 	Echo %wobble% disk fixes applied by Checkdisk after formatting with bad sectors
 	Echo %stable% sucessful sucessive checkdisk runs with no fixes applied
 )
-REM Play a sound to show we are done
+:: Play a sound to show we are done
 call :completed
-REM Show the elapsed time
+:: Show the elapsed time
 call :updatetime
-REM Exit processing end of batchfile
+:: Exit processing end of batchfile
 exit /b
-
 
 :FinalDiskCheck
 set /a finalcheck=0
 set /a finalscancount=0
 set /a finalcheckgoodcount=0
 set /a finalwobble=0
+
 :ReCheckDisk
 set /a finalcheck=finalcheck+1
 call :progress !finalcheck!  !scancount! "Scan"
@@ -147,21 +167,24 @@ echo This will run Checkdisk /R / X and unlock to test disk...
 echo Running post format checks on on disk to test each sector of the disk
 echo This will flag bad sectors so they will not to be used
 chkdsk a: /R /X
-REM Zero is no error
+:: Zero is no error
 if %errorlevel% equ 0 (
 	set /a finalcheckgoodcount+=1
 )
-if %errorlevel% NEQ 0 (
+:: Errors were found and fixed
+if %errorlevel% equ 1 (
 	set /a finalwobble+=1
 	set /a finalcheckgoodcount=0
 )
-echo Final check count is !finalcheck! and limit is set to !maxfinalscancount!
+echo.
+echo Final check count is !finalcheck! and limit is set to !MAX_FINAL_SCAN_COUNT!
 call :BadSectorReport "Scan " !finalcheck!
-if 	!finalcheck! equ !maxfinalscancount! (
+if 	!finalcheck! equ !MAX_FINAL_SCAN_COUNT! (
 	echo.
 	echo Done with final Checks
-	echo Correction count was !finalwobble! with !finalcheck! finalchecks run 
+	echo Correction count was !finalwobble! with !finalcheck! final checks run 
 	echo !finalcheckgoodcount! successful scans
+	call :GraphArray
 	exit /b
 )
 goto :ReCheckDisk
@@ -184,19 +207,19 @@ setlocal
 set /a progress=%~1*20/%~2
 echo.
 echo %~3: %~1 of %~2
-REM Display progress bar
+:: Display progress bar
 for /l %%i in (1, 1, %progress%) do echo|set /p=#
 for /l %%i in (%progress%, 1, 20) do echo|set /p=.
 echo.
+call :AddToArray badSectorBytes %~3:%~1
 call :updatetime
 endlocal
 exit /b
 
-
 :updatetime
-REM Get Script End Time Using jTimestamp.cmd
+:: Get Script End Time Using jTimestamp.cmd
 CALL jTimestamp -f {ums} -r t2
-REM Fancy Time Stamp
+:: Fancy Time Stamp
 for /F "tokens=*" %%a in (
    'jTimestamp -d %t2% /F " {WKD} {MTH} {D}, {yyyy} {H12}:{NN}:{SS}{PM}"'
 ) do (
@@ -205,14 +228,14 @@ for /F "tokens=*" %%a in (
 )
 set "Timestamp=%Timestamp::00am=am%"
 set "Timestamp=%Timestamp::00pm=pm%"
-REM echo %Timestamp%
-REM Get Script End Time Using jTimestamp.cmd
+:: echo %Timestamp%
+:: Get Script End Time Using jTimestamp.cmd
 CALL jTimestamp -d %t2%-%t1% -f "{ud} Days {h} Hours {n} Minutes And {s} Seconds" -u
 exit /b
 
 :showdatetime
 CALL jTimestamp -f {ums} -r t2
-REM Fancy Time Stamp
+:: Fancy Time Stamp
 for /F "tokens=*" %%a in (
    'jTimestamp -d %t2% /F " {WKD} {MTH} {D}, {yyyy} {H12}:{NN}:{SS}{PM}"'
 ) do (
@@ -241,7 +264,6 @@ if errorlevel 1 (
 ) else (
     echo The disk in drive A: has a volume
 )
-:: Initialize variables
 set "VolumeSerialNumber="
 set "FileSystemName="
 :: Capture the output of fsutil into variables
@@ -255,7 +277,7 @@ for /f "tokens=1* delims=:" %%a in ('fsutil fsinfo volumeinfo A: ^| findstr /R /
 echo Volume Serial Number is: %VolumeSerialNumber%
 echo File System Name is: %FileSystemName%
 echo Volume Name is: %VolumeName%
-REM might use this to detect formatted floppies
+:: might use this to detect formatted floppies
 ::if "%VolumeName%"=="FLOPPY" (
 ::   echo The variable is equal to FLOPPY.
 ::)	
@@ -268,16 +290,32 @@ exit /b 0
 :BadSectorReport
 set "ReportingText=%~1"
 set "CountText=%~2"
-if !lastformatfailed! equ 1 (
+set "BadExists=0"
+::Store previous bad sector count
+set /a badSectorBytesPrevious=!BadSectorBytes!
+set /a BadSectorBytes=0
+set /a line=0
+
+if !lastFormatFailed! equ 1 (
 	Echo Unable to format so skipping Bad Sector check
-	exit /b 0
+	exit /b
 )
-:: Run chkdsk and redirect the output to a temporary file 
+
+:: Run CHKDSK and redirect output to a file
 chkdsk A: > chkdsk_output.txt 2>&1
-rem Extract the line with bad sectors information and save it to a new file
-type chkdsk_output.txt | findstr /C:"bytes in bad sectors" > bad_sectors_line.txt
-:: Check if the file bad_sectors_line.txt exists if it does not there are no bad sectors
-if exist "bad_sectors_line.txt" (
+set "chkdskReturn=%errorlevel%"
+
+:: Handle different CHKDSK exit codes
+if !chkdskReturn! equ 3 (
+	Echo Could not check disk so skipping Bad Sector check
+	goto Cleanup
+)
+
+
+if !chkdskReturn! equ 0 (
+	:: Check for bad sectors in the report
+	type chkdsk_output.txt | findstr /C:"bytes in bad sectors" > bad_sectors_line.txt
+	findstr /C:"bytes in bad sectors" bad_sectors_line.txt > nul
 	:: Read the line from the file
 	set /p line=<bad_sectors_line.txt
 	:: Remove leading spaces, commas, and alphabetic characters
@@ -285,29 +323,51 @@ if exist "bad_sectors_line.txt" (
 	set "cleaned_line=!cleaned_line:,=!"
 	for /f "delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" %%a in ("!cleaned_line!") do set "number=%%a"
 	set "IsNumber=1"
-	for /f "tokens=*" %%a in ("!number!") do (
-		if "%%a" lss "0" set "IsNumber=0"
-		if "%%a" gtr "9" set "IsNumber=0"
-	)
+	:: Check if number contains non-numeric characters
+	for /f "delims=0123456789" %%a in ("!number!") do set "IsNumber=0"
 	if "!IsNumber!"=="1" (
 		:: Output the bytes in bad sectors
 		echo Number of bytes in bad sectors: !number!
-		set /a badSectorsFound=1
-		set /a zerodefectformatcount=0
-	) else (
-		echo No bad sectors
-		set /a number=0
-		set /a zerodefectformatcount+=1
+		if !number! equ 0 (
+			Echo Disk is formatted and no bad sectors reported in FAT
+			set /a badSectorsFound=0
+			set /a zerodefectformatcount+=1
+			set /a BadSectorBytes=0
+		)
+		if !number! gtr 0 (
+			Echo Bad sectors reported in FAT
+			set /a badSectorsFound=1
+			set /a zerodefectformatcount=0
+			set /a BadSectorBytes=!number!
+			:: Hard errors are consistent
+			if !badSectorBytesPrevious! equ !BadSectorBytes! (
+				set /a hardErrorsStable=1
+			)
+			:: Check Hard errors are non zero as the zeroDefectFormatCount will catch that
+			If !BadSectorBytes! equ 0 (
+				set /a hardErrorsStable=0
+			)
+			Echo Disk defect stability is !hardErrorsStable! previous bytes in bad sectors was !badSectorBytesPrevious! current bytes in bad sector !BadSectorBytes!	
+		)
+	)
+	if "!IsNumber!"=="0" (
+		Echo Non numeric from bad Sector check halting..
+		exit /b
 	)
 ) 
-set /a BadSectorBytes=Number
-set "gline=!ReportingText!"
-call :AddToArray BadSectorBytes %gline%
-echo #Formats with no bad sectors is !zerodefectformatcount!
-:: Cleanup Delete the temporary file
-del chkdsk_output.txt
-del bad_sectors_line.txt
-exit /b 0
+Echo #Format/Surface Scans with no bad sectors is !zerodefectformatcount!
+goto Cleanup
+)
+
+echo Unexpected return code from CHKDSK
+goto Cleanup
+
+:Cleanup
+:: Clean up temporary files
+if exist chkdsk_output.txt del chkdsk_output.txt
+if exist bad_sectors_line.txt del bad_sectors_line.txt
+exit /b
+
 
 :SFormat
 echo Trying to format
@@ -318,13 +378,13 @@ exit /b 0
 set /a count+=1
 call :progress %count% %maxf% "Format"
 format A: /P:2 /X /Y /V:Floppy
-REM Check the result of the format command
+:: Check the result of the format command
 if %errorlevel% neq 0 (
-	set /a lastformatfailed=1
+	set /a lastFormatFailed=1
 	set /a failedformatcount+=1
 	exit /b 1
 ) else (
-	set /a lastformatfailed=0
+	set /a lastFormatFailed=0
 	set /a goodformatcount+=1
 	exit /b 0	
 )
@@ -390,3 +450,55 @@ if !value! equ 0 (
 :: Return the graph via an output variable
 set "%~2=!graph!"
 exit /b 0
+
+
+:ShowLogo
+echo|set /p=" _______"
+echo.
+echo|set /p="| |__| | Media Recovery Script"
+echo.
+echo|set /p="|  ()  | Version: 1.0 (Disk Defibrillator)"
+echo.
+echo|set /p="|______| Revision: 2024-01-12"
+echo.
+echo.
+
+
+exit /b 0
+
+
+:WPCheck
+REM *** Call format A: and pipe the output to a file named output.txt
+Echo Testing for Write Protection Error, please wait...
+FORMAT A: /P:2 /X /Y /V:Floppy > output.txt
+REM *** Scan the file for the write protected errors and set a variable named isWriteProtected
+find /i "write protected" output.txt > nul
+if %errorlevel% equ 0 (
+  set isWriteProtected=1
+) else (
+  set isWriteProtected=0
+)
+REM *** Display the value of the variable
+echo isWriteProtected = %isWriteProtected%
+
+
+
+:: ====================================
+:: Notes
+:: Description: Summary Notes for batch
+::              File development
+:: Revision     2024-01-12
+:: ====================================
+:: By default, variables within a block of code (like an IF statement or a loop) 
+:: are expanded just once when the block is read, which means %miniumgoodformatcount% 
+:: is not updated after the set /a command within the same block (see code later)
+:: To solve this, enable delayed expansion, which allows you to use ! instead of % to 
+:: get the updated value of a variable within the same block.
+::  
+:: Operator | Description
+:: EQU      | equal to
+:: NEQ      | not equal to
+:: LSS      | less than
+:: LEQ      | less than or equal to
+:: GTR      | greater than
+:: GEQ      | greater than or equal to
