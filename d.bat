@@ -339,17 +339,22 @@ if !chkdskReturn! equ 0 (
 			set /a badSectorsFound=1
 			set /a zerodefectformatcount=0
 			set /a BadSectorBytes=!number!
-			:: Hard errors are consistent
-			if !badSectorBytesPrevious! equ !BadSectorBytes! (
-				set /a hardErrorsStable=1
+			:: Only 2nd format onwards
+			if !count! neq 1 (
+				::We need a format that worked
+				if !lastFormatFailed! equ 0 (
+					:: Hard errors are consistent
+					if !badSectorBytesPrevious! leq !BadSectorBytes! (
+						set /a hardErrorsStable=1
+					)
+					:: This is only looking for reducing BS Counts not zero defect
+					If !badSectorBytesPrevious! equ 0 (
+						set /a hardErrorsStable=0
+					)
+				Echo Disk defect stability is !hardErrorsStable! previous bytes in bad sectors was !badSectorBytesPrevious! current bytes in bad sector !BadSectorBytes!
+				)			
 			)
-			:: Check Hard errors are non zero as the zeroDefectFormatCount will catch that
-			If !BadSectorBytes! equ 0 (
-				set /a hardErrorsStable=0
-			)
-			Echo Disk defect stability is !hardErrorsStable! previous bytes in bad sectors was !badSectorBytesPrevious! current bytes in bad sector !BadSectorBytes!	
 		)
-	)
 	if "!IsNumber!"=="0" (
 		Echo Non numeric from bad Sector check halting..
 		exit /b
